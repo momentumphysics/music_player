@@ -1,32 +1,25 @@
 import os
 from flask import Flask, request, jsonify, send_from_directory, render_template
-from flask_mysqldb import MySQL
+from flask_sqlalchemy import SQLAlchemy
 
 app = Flask(__name__)
 
-app.config['MYSQL_HOST'] = os.environ.get('MYSQL_HOST')
-app.config['MYSQL_USER'] = os.environ.get('MYSQL_USER')
-app.config['MYSQL_PASSWORD'] = os.environ.get('MYSQL_PASSWORD')
-app.config['MYSQL_DB'] = os.environ.get('MYSQL_DB')
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///db.sqlite'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['UPLOAD_FOLDER'] = 'uploads'
 
 if not os.path.exists(app.config['UPLOAD_FOLDER']):
     os.makedirs(app.config['UPLOAD_FOLDER'])
 
-mysql = MySQL(app)
+db = SQLAlchemy(app)
 
-@app.before_first_request
-def create_tables():
-    cur = mysql.connection.cursor()
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS songs (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        filename VARCHAR(255) NOT NULL,
-        filepath VARCHAR(255) NOT NULL
-    )
-    """)
-    mysql.connection.commit()
-    cur.close()
+class Song(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    filename = db.Column(db.String(255), nullable=False)
+    filepath = db.Column(db.String(255), nullable=False)
+
+with app.app_context():
+    db.create_all()
 
 @app.route('/')
 def index():
@@ -34,11 +27,8 @@ def index():
 
 @app.route('/songs', methods=['GET'])
 def get_songs():
-    cur = mysql.connection.cursor()
-    cur.execute("SELECT id, filename, filepath FROM songs")
-    songs = cur.fetchall()
-    cur.close()
-    return jsonify([{'id': song[0], 'filename': song[1], 'filepath': song[2]} for song in songs])
+    songs = Song.query.all()
+    return jsonify([{'id': song.id, 'filename': song.filename, 'filepath': song.filepath} for song in songs])
 
 @app.route('/upload', methods=['POST'])
 def upload_file():
@@ -55,28 +45,22 @@ def upload_file():
             filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
             file.save(filepath)
             
-            cur = mysql.connection.cursor()
-            cur.execute("INSERT INTO songs (filename, filepath) VALUES (%s, %s)", (filename, filepath))
-            mysql.connection.commit()
-            cur.close()
+            new_song = Song(filename=filename, filepath=filepath)
+            db.session.add(new_song)
+            db.session.commit()
             
     return jsonify({'message': 'Files uploaded successfully'})
 
 @app.route('/songs/<int:song_id>', methods=['DELETE'])
 def delete_song(song_id):
-    cur = mysql.connection.cursor()
-    cur.execute("SELECT filepath FROM songs WHERE id = %s", [song_id])
-    song = cur.fetchone()
+    song = Song.query.get(song_id)
     if song:
-        filepath = song[0]
-        if os.path.exists(filepath):
-            os.remove(filepath)
+        if os.path.exists(song.filepath):
+            os.remove(song.filepath)
         
-        cur.execute("DELETE FROM songs WHERE id = %s", [song_id])
-        mysql.connection.commit()
-        cur.close()
+        db.session.delete(song)
+        db.session.commit()
         return jsonify({'message': 'Song deleted successfully'})
-    cur.close()
     return jsonify({'error': 'Song not found'}), 404
 
 @app.route('/uploads/<filename>')
